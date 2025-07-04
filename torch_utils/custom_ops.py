@@ -9,6 +9,8 @@
 import glob
 import hashlib
 import importlib
+import importlib.util
+import importlib.machinery
 import os
 import re
 import shutil
@@ -22,6 +24,10 @@ from torch.utils.file_baton import FileBaton
 # Global options.
 
 verbosity = 'brief' # Verbosity level: 'none', 'brief', 'full'
+
+# Optional directory for precompiled extensions. When set, `get_plugin()` will
+# attempt to load plugins from this directory before building them on the fly.
+precompiled_dir = os.environ.get('STYLEGAN3_PRECOMPILED_DIR')
 
 #----------------------------------------------------------------------------
 # Internal helper funcs.
@@ -67,6 +73,22 @@ def get_plugin(module_name, sources, headers=None, source_dir=None, **build_kwar
     # Already cached?
     if module_name in _cached_plugins:
         return _cached_plugins[module_name]
+
+    # Attempt to load from precompiled directory.
+    pre_dir = os.environ.get('STYLEGAN3_PRECOMPILED_DIR', precompiled_dir)
+    if pre_dir is not None:
+        for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+            fname = os.path.join(pre_dir, module_name + suffix)
+            if os.path.isfile(fname):
+                if verbosity == 'full':
+                    print(f'Loading precompiled PyTorch plugin "{module_name}" from "{fname}"...')
+                spec = importlib.util.spec_from_file_location(module_name, fname)
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)  # type: ignore
+                _cached_plugins[module_name] = module
+                if verbosity == 'brief':
+                    print(f'Loaded precompiled PyTorch plugin "{module_name}".')
+                return module
 
     # Print status.
     if verbosity == 'full':

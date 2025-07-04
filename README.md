@@ -65,6 +65,14 @@ While new generator approaches enable new media synthesis capabilities, they may
 
 The code relies heavily on custom PyTorch extensions that are compiled on the fly using NVCC. On Windows, the compilation requires Microsoft Visual Studio. We recommend installing [Visual Studio Community Edition](https://visualstudio.microsoft.com/vs/) and adding it into `PATH` using `"C:\Program Files (x86)\Microsoft Visual Studio\<VERSION>\Community\VC\Auxiliary\Build\vcvars64.bat"`.
 
+To avoid compiling these extensions at run time, you can pre-build them with:
+
+```bash
+python build_extensions.py --outdir=precompiled
+```
+
+Set the environment variable `STYLEGAN3_PRECOMPILED_DIR` to the directory containing the generated files to load the precompiled versions instead of building on the fly.
+
 See [Troubleshooting](./docs/troubleshooting.md) for help on common installation and run-time problems.
 
 ## Getting started
@@ -81,7 +89,7 @@ python gen_video.py --output=lerp.mp4 --trunc=1 --seeds=0-31 --grid=4x2 \
     --network=https://api.ngc.nvidia.com/v2/models/nvidia/research/stylegan3/versions/1/files/stylegan3-r-afhqv2-512x512.pkl
 ```
 
-Outputs from the above commands are placed under `out/*.png`, controlled by `--outdir`. Downloaded network pickles are cached under `$HOME/.cache/dnnlib`, which can be overridden by setting the `DNNLIB_CACHE_DIR` environment variable. The default PyTorch extension build directory is `$HOME/.cache/torch_extensions`, which can be overridden by setting `TORCH_EXTENSIONS_DIR`.
+Outputs from the above commands are placed under `out/*.png`, controlled by `--outdir`. Downloaded network pickles are cached under `$HOME/.cache/dnnlib`, which can be overridden by setting the `DNNLIB_CACHE_DIR` environment variable. The default PyTorch extension build directory is `$HOME/.cache/torch_extensions`, which can be overridden by setting `TORCH_EXTENSIONS_DIR`. When using precompiled extensions, set `STYLEGAN3_PRECOMPILED_DIR` to point at the directory created by `build_extensions.py`.
 
 **Docker**: You can run the above curated image example using Docker as follows:
 
