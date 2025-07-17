@@ -18,6 +18,7 @@ import PIL.Image
 import numpy as np
 import torch
 import dnnlib
+from codecarbon import track_emissions
 from torch_utils import misc
 from torch_utils import training_stats
 from torch_utils.ops import conv2d_gradfix
@@ -87,6 +88,7 @@ def save_image_grid(img, fname, drange, grid_size):
 
 #----------------------------------------------------------------------------
 
+@track_emissions()
 def training_loop(
     run_dir                 = '.',      # Output directory.
     training_set_kwargs     = {},       # Options for training set.
