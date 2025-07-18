@@ -17,6 +17,7 @@ import psutil
 import PIL.Image
 import numpy as np
 import torch
+import signal
 import dnnlib
 from codecarbon import track_emissions
 from torch_utils import misc
@@ -251,9 +252,35 @@ def training_loop(
     tick_start_time = time.time()
     maintenance_time = tick_start_time - start_time
     batch_idx = 0
+    done = False
+    force_snapshot = False
+    interrupted = {'flag': False}
+
+    def _signal_handler(signum, frame):
+        interrupted['flag'] = True
+
+    signal.signal(signal.SIGINT, _signal_handler)
     if progress_fn is not None:
         progress_fn(0, total_kimg)
     while True:
+        if interrupted['flag']:
+            interrupted['flag'] = False
+            choice = False
+            if rank == 0:
+                try:
+                    resp = input('would you like to create a snapshot before stopping the training? (y/N) ')
+                except EOFError:
+                    resp = 'n'
+                choice = resp.strip().lower() in ('y', 'yes')
+            if num_gpus > 1:
+                tensor = torch.tensor([int(choice)], device=device)
+                torch.distributed.broadcast(tensor, src=0)
+                choice = bool(tensor.item())
+            if choice:
+                force_snapshot = True
+                done = True
+            else:
+                raise KeyboardInterrupt
 
         # Fetch training data.
         with torch.autograd.profiler.record_function('data_fetch'):
@@ -351,7 +378,7 @@ def training_loop(
                 print('Aborting...')
 
         # Save image snapshot.
-        if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0):
+        if (rank == 0) and (image_snapshot_ticks is not None) and (done or cur_tick % image_snapshot_ticks == 0 or force_snapshot):
             images = torch.cat([G_ema(z=z, c=c, noise_mode='const').cpu() for z, c in zip(grid_z, grid_c)]).numpy()
             snapshot_path = os.path.join(run_dir, f'fakes{cur_nimg//1000:06d}.png')
             save_image_grid(images, snapshot_path, drange=[-1,1], grid_size=grid_size)
@@ -363,7 +390,7 @@ def training_loop(
         # Save network snapshot.
         snapshot_pkl = None
         snapshot_data = None
-        if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):
+        if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0 or force_snapshot):
             snapshot_data = dict(G=G, D=D, G_ema=G_ema, augment_pipe=augment_pipe, training_set_kwargs=dict(training_set_kwargs))
             for key, value in snapshot_data.items():
                 if isinstance(value, torch.nn.Module):
@@ -417,6 +444,9 @@ def training_loop(
             stats_tfevents.flush()
         if progress_fn is not None:
             progress_fn(cur_nimg // 1000, total_kimg)
+
+        if force_snapshot:
+            force_snapshot = False
 
         # Update state.
         cur_tick += 1
