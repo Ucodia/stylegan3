@@ -68,6 +68,18 @@ def get_plugin(module_name, sources, headers=None, source_dir=None, **build_kwar
     if module_name in _cached_plugins:
         return _cached_plugins[module_name]
 
+    # Try to load prebuilt module first.
+    try:
+        module = importlib.import_module(module_name)
+        if verbosity == 'full':
+            print(f'Loaded prebuilt PyTorch plugin "{module_name}".')
+        elif verbosity == 'brief':
+            print(f'Loaded prebuilt PyTorch plugin "{module_name}".')
+        _cached_plugins[module_name] = module
+        return module
+    except ImportError:
+        pass
+
     # Print status.
     if verbosity == 'full':
         print(f'Setting up PyTorch plugin "{module_name}"...')

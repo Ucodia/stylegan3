@@ -65,6 +65,14 @@ While new generator approaches enable new media synthesis capabilities, they may
 
 The code relies heavily on custom PyTorch extensions that are compiled on the fly using NVCC. On Windows, the compilation requires Microsoft Visual Studio. We recommend installing [Visual Studio Community Edition](https://visualstudio.microsoft.com/vs/) and adding it into `PATH` using `"C:\Program Files (x86)\Microsoft Visual Studio\<VERSION>\Community\VC\Auxiliary\Build\vcvars64.bat"`.
 
+Alternatively you can pre-build the custom extensions using `setup.py` to avoid JIT compilation at runtime:
+
+```.bash
+python setup.py install
+```
+
+The build script compiles the CUDA kernels for a wide range of NVIDIA GPUs, including future RTX cards such as the RTX5090.
+
 See [Troubleshooting](./docs/troubleshooting.md) for help on common installation and run-time problems.
 
 ## Getting started
