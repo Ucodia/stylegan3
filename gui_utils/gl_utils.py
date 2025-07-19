@@ -81,6 +81,15 @@ _shader_prog = None
 _shader_loc = None
 _current_texture = None
 
+@contextlib.contextmanager
+def _pixel_store(pname, value):
+    prev = gl.glGetIntegerv(pname)
+    gl.glPixelStorei(pname, value)
+    try:
+        yield
+    finally:
+        gl.glPixelStorei(pname, prev)
+
 def _init_shader():
     global _shader_prog, _shader_loc
     if _shader_prog is not None:
@@ -160,10 +169,8 @@ def read_pixels(width, height, *, pos=0, dtype='uint8', channels=3):
     fmt = get_texture_format(dtype, channels)
     image = np.empty([height, width, channels], dtype=dtype)
 
-    gl.glPushClientAttrib(gl.GL_CLIENT_PIXEL_STORE_BIT)
-    gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
-    gl.glReadPixels(int(np.round(pos[0])), int(np.round(pos[1])), width, height, fmt.format, fmt.type, image)
-    gl.glPopClientAttrib()
+    with _pixel_store(gl.GL_PACK_ALIGNMENT, 1):
+        gl.glReadPixels(int(np.round(pos[0])), int(np.round(pos[1])), width, height, fmt.format, fmt.type, image)
     return np.flipud(image)
 
 #----------------------------------------------------------------------------
@@ -231,12 +238,10 @@ class Texture:
             assert self.is_compatible(image=image)
         with self.bind():
             fmt = get_texture_format(self.dtype, self.channels)
-            gl.glPushClientAttrib(gl.GL_CLIENT_PIXEL_STORE_BIT)
-            gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
-            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, fmt.internalformat, self.width, self.height, 0, fmt.format, fmt.type, image)
-            if self.mipmap:
-                gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
-            gl.glPopClientAttrib()
+            with _pixel_store(gl.GL_UNPACK_ALIGNMENT, 1):
+                gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, fmt.internalformat, self.width, self.height, 0, fmt.format, fmt.type, image)
+                if self.mipmap:
+                    gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
 
     def draw(self, *, pos=0, zoom=1, align=0, rint=False, color=1, alpha=1, rounding=0):
         zoom = np.broadcast_to(np.asarray(zoom, dtype='float32'), [2])
