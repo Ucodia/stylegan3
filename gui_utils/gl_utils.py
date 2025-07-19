@@ -9,6 +9,7 @@
 import os
 import functools
 import contextlib
+import ctypes
 import numpy as np
 import OpenGL.GL as gl
 import OpenGL.GL.ARB.texture_float
@@ -76,6 +77,67 @@ _texture_formats = {
 def get_texture_format(dtype, channels):
     return _texture_formats[(np.dtype(dtype).name, int(channels))]
 
+_shader_prog = None
+_shader_loc = None
+_current_texture = None
+
+@contextlib.contextmanager
+def _pixel_store(pname, value):
+    prev = gl.glGetIntegerv(pname)
+    gl.glPixelStorei(pname, value)
+    try:
+        yield
+    finally:
+        gl.glPixelStorei(pname, prev)
+
+def _init_shader():
+    global _shader_prog, _shader_loc
+    if _shader_prog is not None:
+        return
+    vert_src = """
+    #version 120
+    attribute vec2 a_pos;
+    attribute vec2 a_tex;
+    varying vec2 v_tex;
+    void main() {
+        v_tex = a_tex;
+        gl_Position = vec4(a_pos, 0.0, 1.0);
+    }
+    """
+    frag_src = """
+    #version 120
+    uniform vec4 u_color;
+    uniform sampler2D u_tex;
+    uniform int u_use_tex;
+    varying vec2 v_tex;
+    void main() {
+        vec4 c = u_color;
+        if (u_use_tex == 1)
+            c *= texture2D(u_tex, v_tex);
+        gl_FragColor = c;
+    }
+    """
+    vs = gl.glCreateShader(gl.GL_VERTEX_SHADER)
+    gl.glShaderSource(vs, vert_src)
+    gl.glCompileShader(vs)
+    fs = gl.glCreateShader(gl.GL_FRAGMENT_SHADER)
+    gl.glShaderSource(fs, frag_src)
+    gl.glCompileShader(fs)
+    prog = gl.glCreateProgram()
+    gl.glAttachShader(prog, vs)
+    gl.glAttachShader(prog, fs)
+    gl.glLinkProgram(prog)
+    gl.glDeleteShader(vs)
+    gl.glDeleteShader(fs)
+    _shader_prog = prog
+    _shader_loc = dnnlib.EasyDict(
+        pos=gl.glGetAttribLocation(prog, 'a_pos'),
+        tex=gl.glGetAttribLocation(prog, 'a_tex'),
+        color=gl.glGetUniformLocation(prog, 'u_color'),
+        sampler=gl.glGetUniformLocation(prog, 'u_tex'),
+        use_tex=gl.glGetUniformLocation(prog, 'u_use_tex'),
+    )
+
 #----------------------------------------------------------------------------
 
 def prepare_texture_data(image):
@@ -93,21 +155,11 @@ def draw_pixels(image, *, pos=0, zoom=1, align=0, rint=True):
     zoom = np.broadcast_to(np.asarray(zoom, dtype='float32'), [2])
     align = np.broadcast_to(np.asarray(align, dtype='float32'), [2])
     image = prepare_texture_data(image)
-    height, width, channels = image.shape
-    size = zoom * [width, height]
-    pos = pos - size * align
-    if rint:
-        pos = np.rint(pos)
-    fmt = get_texture_format(image.dtype, channels)
-
-    gl.glPushAttrib(gl.GL_CURRENT_BIT | gl.GL_PIXEL_MODE_BIT)
-    gl.glPushClientAttrib(gl.GL_CLIENT_PIXEL_STORE_BIT)
-    gl.glRasterPos2f(pos[0], pos[1])
-    gl.glPixelZoom(zoom[0], -zoom[1])
-    gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
-    gl.glDrawPixels(width, height, fmt.format, fmt.type, image)
-    gl.glPopClientAttrib()
-    gl.glPopAttrib()
+    tex = Texture(image=image, bilinear=False, mipmap=False)
+    try:
+        tex.draw(pos=pos, zoom=zoom, align=align, rint=rint)
+    finally:
+        tex.delete()
 
 #----------------------------------------------------------------------------
 
@@ -117,10 +169,8 @@ def read_pixels(width, height, *, pos=0, dtype='uint8', channels=3):
     fmt = get_texture_format(dtype, channels)
     image = np.empty([height, width, channels], dtype=dtype)
 
-    gl.glPushClientAttrib(gl.GL_CLIENT_PIXEL_STORE_BIT)
-    gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
-    gl.glReadPixels(int(np.round(pos[0])), int(np.round(pos[1])), width, height, fmt.format, fmt.type, image)
-    gl.glPopClientAttrib()
+    with _pixel_store(gl.GL_PACK_ALIGNMENT, 1):
+        gl.glReadPixels(int(np.round(pos[0])), int(np.round(pos[1])), width, height, fmt.format, fmt.type, image)
     return np.flipud(image)
 
 #----------------------------------------------------------------------------
@@ -171,10 +221,16 @@ class Texture:
 
     @contextlib.contextmanager
     def bind(self):
+        global _current_texture
         prev_id = gl.glGetInteger(gl.GL_TEXTURE_BINDING_2D)
+        prev_tex = _current_texture
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.gl_id)
-        yield
-        gl.glBindTexture(gl.GL_TEXTURE_2D, prev_id)
+        _current_texture = self
+        try:
+            yield
+        finally:
+            gl.glBindTexture(gl.GL_TEXTURE_2D, prev_id)
+            _current_texture = prev_tex
 
     def update(self, image):
         if image is not None:
@@ -182,21 +238,16 @@ class Texture:
             assert self.is_compatible(image=image)
         with self.bind():
             fmt = get_texture_format(self.dtype, self.channels)
-            gl.glPushClientAttrib(gl.GL_CLIENT_PIXEL_STORE_BIT)
-            gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
-            gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, fmt.internalformat, self.width, self.height, 0, fmt.format, fmt.type, image)
-            if self.mipmap:
-                gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
-            gl.glPopClientAttrib()
+            with _pixel_store(gl.GL_UNPACK_ALIGNMENT, 1):
+                gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, fmt.internalformat, self.width, self.height, 0, fmt.format, fmt.type, image)
+                if self.mipmap:
+                    gl.glGenerateMipmap(gl.GL_TEXTURE_2D)
 
     def draw(self, *, pos=0, zoom=1, align=0, rint=False, color=1, alpha=1, rounding=0):
         zoom = np.broadcast_to(np.asarray(zoom, dtype='float32'), [2])
         size = zoom * [self.width, self.height]
         with self.bind():
-            gl.glPushAttrib(gl.GL_ENABLE_BIT)
-            gl.glEnable(gl.GL_TEXTURE_2D)
             draw_rect(pos=pos, size=size, align=align, rint=rint, color=color, alpha=alpha, rounding=rounding)
-            gl.glPopAttrib()
 
     def is_compatible(self, *, image=None, width=None, height=None, channels=None, dtype=None): # pylint: disable=too-many-return-statements
         if image is not None:
@@ -306,29 +357,49 @@ class Framebuffer:
 #----------------------------------------------------------------------------
 
 def draw_shape(vertices, *, mode=gl.GL_TRIANGLE_FAN, pos=0, size=1, color=1, alpha=1):
+    _init_shader()
     assert vertices.ndim == 2 and vertices.shape[1] == 2
     pos = np.broadcast_to(np.asarray(pos, dtype='float32'), [2])
     size = np.broadcast_to(np.asarray(size, dtype='float32'), [2])
     color = np.broadcast_to(np.asarray(color, dtype='float32'), [3])
     alpha = np.clip(np.broadcast_to(np.asarray(alpha, dtype='float32'), []), 0, 1)
 
-    gl.glPushClientAttrib(gl.GL_CLIENT_VERTEX_ARRAY_BIT)
-    gl.glPushAttrib(gl.GL_CURRENT_BIT | gl.GL_TRANSFORM_BIT)
-    gl.glMatrixMode(gl.GL_MODELVIEW)
-    gl.glPushMatrix()
+    viewport = gl.glGetIntegerv(gl.GL_VIEWPORT)
+    w = max(int(viewport[2]), 1)
+    h = max(int(viewport[3]), 1)
 
-    gl.glEnableClientState(gl.GL_VERTEX_ARRAY)
-    gl.glEnableClientState(gl.GL_TEXTURE_COORD_ARRAY)
-    gl.glVertexPointer(2, gl.GL_FLOAT, 0, vertices)
-    gl.glTexCoordPointer(2, gl.GL_FLOAT, 0, vertices)
-    gl.glTranslate(pos[0], pos[1], 0)
-    gl.glScale(size[0], size[1], 1)
-    gl.glColor4f(color[0] * alpha, color[1] * alpha, color[2] * alpha, alpha)
+    verts = (vertices * size + pos).astype('float32')
+    verts[:, 0] = verts[:, 0] * 2 / w - 1
+    verts[:, 1] = 1 - verts[:, 1] * 2 / h
+
+    data = np.concatenate([verts, vertices.astype('float32')], axis=1)
+    vbo = gl.glGenBuffers(1)
+    gl.glBindBuffer(gl.GL_ARRAY_BUFFER, vbo)
+    gl.glBufferData(gl.GL_ARRAY_BUFFER, data.nbytes, data, gl.GL_STREAM_DRAW)
+
+    vao = gl.glGenVertexArrays(1)
+    gl.glBindVertexArray(vao)
+    gl.glEnableVertexAttribArray(_shader_loc.pos)
+    gl.glVertexAttribPointer(_shader_loc.pos, 2, gl.GL_FLOAT, False, 16, ctypes.c_void_p(0))
+    gl.glEnableVertexAttribArray(_shader_loc.tex)
+    gl.glVertexAttribPointer(_shader_loc.tex, 2, gl.GL_FLOAT, False, 16, ctypes.c_void_p(8))
+
+    gl.glUseProgram(_shader_prog)
+    gl.glUniform4f(_shader_loc.color, color[0] * alpha, color[1] * alpha, color[2] * alpha, alpha)
+    if _current_texture is not None:
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, _current_texture.gl_id)
+        gl.glUniform1i(_shader_loc.sampler, 0)
+        gl.glUniform1i(_shader_loc.use_tex, 1)
+    else:
+        gl.glUniform1i(_shader_loc.use_tex, 0)
+
     gl.glDrawArrays(mode, 0, vertices.shape[0])
 
-    gl.glPopMatrix()
-    gl.glPopAttrib()
-    gl.glPopClientAttrib()
+    gl.glBindVertexArray(0)
+    gl.glUseProgram(0)
+    gl.glDeleteVertexArrays(1, [vao])
+    gl.glDeleteBuffers(1, [vbo])
 
 #----------------------------------------------------------------------------
 
