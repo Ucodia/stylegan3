@@ -103,7 +103,11 @@ def generate_images(
     """
 
     print('Loading networks from "%s"...' % network_pkl)
-    device = torch.device('cuda')
+    device = (
+        torch.device('cuda') if torch.cuda.is_available() else
+        torch.device('mps') if torch.backends.mps.is_available() else
+        torch.device('cpu')
+    )
     with dnnlib.util.open_url(network_pkl) as f:
         G = legacy.load_network_pkl(f)['G_ema'].to(device) # type: ignore
 
@@ -122,8 +126,10 @@ def generate_images(
     # Generate images.
     for seed_idx, seed in enumerate(seeds):
         print('Generating image for seed %d (%d/%d) ...' % (seed, seed_idx, len(seeds)))
-        z = torch.from_numpy(np.random.RandomState(seed).randn(1, G.z_dim)).to(device)
-
+        random_array = np.random.RandomState(seed).randn(1, G.z_dim)
+        if device.type == 'mps':
+            random_array = random_array.astype(np.float32)
+        z = torch.from_numpy(random_array).to(device)
         # Construct an inverse rotation/translation matrix and pass to the generator.  The
         # generator expects this matrix as an inverse to avoid potentially failing numerical
         # operations in the network.
